@@ -1,3 +1,4 @@
+import json
 from google import genai
 import pandas as pd
 import streamlit as st
@@ -10,12 +11,7 @@ st.title("🇮🇳 తెలుగు & Tenglish Sentiment AI")
 st.write("తెలుగు & తంగ్లీష్ కామెంట్లలోని Positive, Negative, మరియు Sarcasm గుర్తించే AI.")
 
 
-def get_sentiment(text):
-  prompt = f"""
-    Analyze this Telugu/Tenglish comment: "{text}"
-    Classify strictly into one word: Positive, Negative, or Sarcasm.
-    Then on a new line, give a short reason in English and Telugu.
-    """
+def call_gemini(prompt):
   available_models = [
       m.name.replace("models/", "")
       for m in client.models.list()
@@ -28,7 +24,7 @@ def get_sentiment(text):
       return res.text
     except Exception:
       continue
-  return "Error: Server Busy"
+  return None
 
 
 tab1, tab2 = st.tabs(["💬 సింగిల్ కామెంట్ చెక్", "📊 బల్క్ CSV & చార్ట్"])
@@ -41,9 +37,17 @@ with tab1:
   if st.button("చెక్ చెయ్ (Check)"):
     if comment:
       with st.spinner("AI ఆలోచిస్తోంది..."):
-        result = get_sentiment(comment)
-        st.success("ఫలితం సిద్ధం!")
-        st.write(result)
+        prompt = f"""
+                Analyze this Telugu/Tenglish comment: "{comment}"
+                Classify strictly into: Positive, Negative, or Sarcasm.
+                Explain the reason clearly in English and Telugu.
+                """
+        result = call_gemini(prompt)
+        if result:
+          st.success("ఫలితం సిద్ధం!")
+          st.write(result)
+        else:
+          st.error("ప్రస్తుతం సర్వర్ బిజీగా ఉంది, కాసేపటి తర్వాత ప్రయత్నించండి.")
     else:
       st.warning("ముందు ఏదైనా కామెంట్ టైప్ చేయండి!")
 
@@ -54,22 +58,31 @@ with tab2:
     df = pd.read_csv(uploaded_file)
     if "comment" in df.columns:
       if st.button("అన్ని కామెంట్లను విశ్లేషించు"):
-        categories = []
-        progress = st.progress(0)
-        for i, row in df.iterrows():
-          ans = get_sentiment(str(row["comment"]))
-          first_line = ans.split("\n").strip()
-          if "Sarcasm" in first_line:
-            categories.append("Sarcasm")
-          elif "Negative" in first_line:
-            categories.append("Negative")
+        with st.spinner("అన్ని కామెంట్లను ఒకేసారి విశ్లేషిస్తోంది... 5 సెకన్లు వేచి ఉండండి"):
+          comments_list = df["comment"].astype(str).tolist()
+          batch_prompt = f"""
+                    Classify each of the following {len(comments_list)} Telugu/Tenglish comments strictly into one of these three labels: "Positive", "Negative", or "Sarcasm".
+                    Return ONLY a valid JSON list of strings in the exact same order, with no markdown formatting or extra text.
+                    Comments: {json.dumps(comments_list, ensure_ascii=False)}
+                    """
+          raw_res = call_gemini(batch_prompt)
+          if raw_res:
+            try:
+              clean_json = (
+                  raw_res.replace("```json", "").replace("```", "").strip()
+              )
+              categories = json.loads(clean_json)
+              if len(categories) == len(df):
+                df["Sentiment"] = categories
+                st.success("విశ్లేషణ పూర్తయింది!")
+                st.dataframe(df)
+                st.subheader("📈 సెంటిమెంట్ విశ్లేషణ గ్రాఫ్")
+                st.bar_chart(df["Sentiment"].value_counts())
+              else:
+                st.error("దయచేసి మళ్ళీ ఒకసారి బటన్ నొక్కండి.")
+            except Exception:
+              st.error("ఫలితాన్ని ప్రాసెస్ చేయడంలో చిన్న సమస్య వచ్చింది, మళ్ళీ నొక్కండి.")
           else:
-            categories.append("Positive")
-          progress.progress((i + 1) / len(df))
-
-        df["Sentiment"] = categories
-        st.dataframe(df)
-        st.subheader("📈 సెంటిమెంట్ విశ్లేషణ గ్రాఫ్")
-        st.bar_chart(df["Sentiment"].value_counts())
+            st.error("సర్వర్ బిజీగా ఉంది, 10 సెకన్ల తర్వాత మళ్ళీ ప్రయత్నించండి.")
     else:
       st.error("CSV ఫైల్‌లో 'comment' అనే కాలమ్ ఉండాలి!")
